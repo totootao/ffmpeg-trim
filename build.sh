@@ -1,7 +1,13 @@
 #!/bin/sh
 # =====================================================================
-# 可复现构建脚本:ffmpeg-trim —— 仅裁剪(MP3/MKV/AVI/MP4/TS,-c copy)的
-# 最小 FFmpeg。零编码器、零视频解码器,musl 静态链接。
+# 可复现构建脚本:ffmpeg-trim —— 仅裁剪(零重编码,-c copy)的最小 FFmpeg。
+# 零编码器、零视频解码器,musl 静态链接,单文件约 2MB。
+#
+# v2 变更(2026-09,配合 tvtrim):
+#   + 视频解析器 av1/vp8/vp9/mpeg4video/mpegvideo(webm 与 avi 裁剪的分帧能力)
+#   + 容器 webm/flv/mpegps/mpegvideo/ogg/asf(输入输出)/h264、hevc 裸流/adts、latm
+#   + 音频解码器 mp3/ac3/eac3/flac/opus/vorbis(仅解码用于静音检测,不重编码)
+#   + 滤镜 silencedetect/volumedetect(自动定位片头片尾的静音边界)
 #
 # 用法:
 #   sh build.sh                    # 默认 x86_64
@@ -47,21 +53,51 @@ fi
 
 # ---------------- 源码 ----------------
 cd "$SRC_DIR"
-[ -f "ffmpeg-$FFMPEG_VER.tar.xz" ] || wget "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz"
-[ -d "ffmpeg-$FFMPEG_VER" ] || tar xf "ffmpeg-$FFMPEG_VER.tar.xz"
+# 优先官方 tarball;ffmpeg.org 不可达时自动回退 GitHub mirror(git archive)
+if [ ! -d "ffmpeg-$FFMPEG_VER" ]; then
+    if [ ! -f "ffmpeg-$FFMPEG_VER.tar.xz" ] || ! tar tf "ffmpeg-$FFMPEG_VER.tar.xz" >/dev/null 2>&1; then
+        if wget -q --timeout=15 "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz" 2>/dev/null; then
+            tar xf "ffmpeg-$FFMPEG_VER.tar.xz"
+        else
+            echo "[build.sh] ffmpeg.org 不可达,改用 GitHub mirror…"
+            rm -f "ffmpeg-$FFMPEG_VER.tar.xz"
+            wget -q "https://ghproxy.totootao.top/https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$FFMPEG_VER.tar.gz" -O mirror.tgz
+            mkdir -p "ffmpeg-$FFMPEG_VER"
+            tar xzf mirror.tgz -C "ffmpeg-$FFMPEG_VER" --strip-components=1
+            rm -f mirror.tgz
+        fi
+    else
+        tar xf "ffmpeg-$FFMPEG_VER.tar.xz"
+    fi
+fi
 
-# ---------------- 配置:只留裁剪所需 ----------------
+# ---------------- 配置:只留裁剪与探测所需 ----------------
 TRIM_COMPONENTS="
     --enable-demuxer=mp3 --enable-muxer=mp3
     --enable-demuxer=avi --enable-muxer=avi
     --enable-demuxer=mov --enable-muxer=mp4
-    --enable-demuxer=matroska --enable-muxer=matroska
+    --enable-demuxer=matroska --enable-muxer=matroska --enable-muxer=webm
     --enable-demuxer=mpegts --enable-muxer=mpegts
+    --enable-demuxer=flv --enable-muxer=flv
+    --enable-demuxer=mpegvideo --enable-demuxer=mpegps
+    --enable-demuxer=h264 --enable-demuxer=hevc
+    --enable-demuxer=ogg
+    --enable-demuxer=asf --enable-muxer=asf
+    --enable-muxer=adts --enable-muxer=latm
+    --enable-muxer=null
+    --enable-encoder=wrapped_avframe --enable-encoder=pcm_s16le
     --enable-decoder=aac --enable-decoder=aac_latm
+    --enable-decoder=mp3 --enable-decoder=ac3 --enable-decoder=eac3
+    --enable-decoder=flac --enable-decoder=opus --enable-decoder=vorbis
     --enable-parser=mpegaudio --enable-parser=aac --enable-parser=h264 --enable-parser=hevc --enable-parser=ac3
-    --enable-bsf=h264_mp4toannexb --enable-bsf=hevc_mp4toannexb --enable-bsf=aac_adtstoasc --enable-bsf=extract_extradata
+    --enable-parser=av1 --enable-parser=vp8 --enable-parser=vp9
+    --enable-parser=mpeg4video --enable-parser=mpegvideo
+    --enable-parser=opus --enable-parser=vorbis --enable-parser=flac
+    --enable-bsf=h264_mp4toannexb --enable-bsf=hevc_mp4toannexb --enable-bsf=vvc_mp4toannexb
+    --enable-bsf=aac_adtstoasc --enable-bsf=extract_extradata
     --enable-protocol=file
     --enable-filter=aresample --enable-filter=aformat --enable-filter=anull
+    --enable-filter=silencedetect --enable-filter=volumedetect
 "
 
 cd "$SRC_DIR/ffmpeg-$FFMPEG_VER"
@@ -91,5 +127,6 @@ OUT_NAME="ffmpeg"
 cp -f ffmpeg "$OUT_NAME"
 
 echo "======================================================"
-echo "构建完成: $(pwd)/$OUT_NAME ($ARCH, 全静态, 约 2MB)"
+echo "构建完成: $(pwd)/$OUT_NAME ($ARCH, 全静态)"
+ls -la "$OUT_NAME"
 echo "======================================================"
